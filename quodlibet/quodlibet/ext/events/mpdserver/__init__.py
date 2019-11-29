@@ -32,12 +32,14 @@ from .tcpserver import ServerError
 from .avahi import AvahiService, AvahiError
 
 
+GOOGLE_DNS_IP = "8.8.8.8"
+
 def fetch_local_ip():
     """Returns a guess for the local IP"""
 
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
+        s.connect((GOOGLE_DNS_IP, 80))
         addr = s.getsockname()[0]
         s.close()
     except EnvironmentError:

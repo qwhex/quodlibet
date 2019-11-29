@@ -12,7 +12,26 @@ from senf import bytes2fsn, fsn2bytes
 
 from quodlibet import const
 from quodlibet.util import print_d, print_w
+from quodlibet.util.dprint import Colorise
 from .tcpserver import BaseTCPServer, BaseTCPConnection
+
+# FIXME
+import sys
+print(f'Python version: {sys.version}')
+
+const.print_idx = 0
+def debug_print(action, **kwargs):
+    print(f' - {action} (#{const.print_idx})')
+    for key, val in kwargs.items():
+        print(f'  {key}={val}')
+    const.print_idx += 1
+    print()
+
+
+def unimplemented(name):
+    print()
+    print(Colorise.red(f'UNIMPLEMENTED: {name}'))
+    print()
 
 
 class AckError(object):
@@ -43,43 +62,53 @@ class Permissions(object):
                      PERMISSION_ADMIN
 
 
-TAG_MAPPING = [
-    (u"Artist", "artist"),
-    (u"ArtistSort", "artistsort"),
-    (u"Album", "album"),
-    (u"AlbumArtist", "albumartist"),
-    (u"AlbumArtistSort", "albumartistsort"),
-    (u"Title", "title"),
-    (u"Track", "tracknumber"),
-    (u"Genre", "genre"),
-    (u"Date", "~year"),
-    (u"Composer", "composer"),
-    (u"Performer", "performer"),
-    (u"Comment", "commend"),
-    (u"Disc", "discnumber"),
-    (u"Name", "~basename"),
-    (u"MUSICBRAINZ_ARTISTID", "musicbrainz_artistid"),
-    (u"MUSICBRAINZ_ALBUMID", "musicbrainz_albumid"),
-    (u"MUSICBRAINZ_ALBUMARTISTID", "musicbrainz_albumartistid"),
-    (u"MUSICBRAINZ_TRACKID", "musicbrainz_trackid"),
+# See: https://www.musicpd.org/doc/html/protocol.html#tags
+SAME_TAGS = [
+    "Artist",
+    "ArtistSort", # same as artist, but for sorting
+    "Album",
+    "AbumSort", # same as album, but for sorting
+    "AlbumArtist", # on multi-artist albums: the main artist
+    "AlbumArtistAort", # same as albumartist, but for sorting
+    "Title",
+    "Genre",
+    "Composer", # the artist who composed the song
+    "Performer", # the artist who performed the song
+    "Comment", # a human-readable comment about this song
+    "Label", # label: the name of the label or publisher
+    "Work", # a work is a distinct intellectual or artistic creation, which can be expressed in the form of one or more audio recordings
+    "Grouping", # used if the sound belongs to a larger category of sounds/music
+    "musicbrainz_artistid",
+    "musicbrainz_albumid",
+    "musicbrainz_albumartistid",
+    "musicbrainz_trackid",
+    "musicbrainz_releasetrackid",
+    "musicbrainz_workid",
 ]
 
+TAG_MAPPING = {
+    "date": "~year", # a 4-digit year
+    "track": "tracknumber", # the decimal track number within the album
+    "name": "title", # a name for this song. combined artist name - song title.
+    "disc": "discnumber", # the decimal disc number in a multi-disc album
+}
 
 def format_tags(song):
     """Gives a tag list message for a song"""
 
-    lines = []
-    for mpd_key, ql_key in TAG_MAPPING:
-        value = song.comma(ql_key) or None
+    mapping = {}
+    for mpd_key in SAME_TAGS:
+        mapping[mpd_key] = song.comma(mpd_key.lower())  
 
-        if value is not None:
-            lines.append(u"%s: %s" % (mpd_key, value))
+    for mpd_key, ql_key in TAG_MAPPING.items():
+        mapping[mpd_key] = song.comma(ql_key)
 
-    return u"\n".join(lines)
+    return '\n'.join(f"{key}: {val}" for key, val in mapping.items() if val)
 
 
 class ParseError(Exception):
-    pass
+    def __init__(self, *args, **kwargs):
+        debug_print('ParseError', args=args, **kwargs)
 
 
 def parse_command(line):
@@ -124,7 +153,7 @@ def parse_command(line):
 class MPDService(object):
     """This is the actual shared MPD service which the clients talk to"""
 
-    version = (0, 17, 0)
+    version = (0, 22, 0)
 
     def __init__(self, app, config):
         self._app = app
@@ -212,9 +241,10 @@ class MPDService(object):
             # send out the response and remove the idle status for affected
             # connections
             for subsystem in to_send:
-                conn.write_line(u"changed: %s" % subsystem)
+                conn.write_line("changed: %s" % subsystem)
             if to_send:
                 flushed.append(conn)
+                # FIXME: why ok here?
                 conn.ok()
                 conn.start_write()
 
@@ -225,7 +255,7 @@ class MPDService(object):
         self._idle_subscriptions.pop(connection, None)
 
     def emit_changed(self, subsystem):
-        for conn, subs in self._idle_queue.items():
+        for _conn, subs in self._idle_queue.items():
             subs.add(subsystem)
         self.flush_idle()
 
@@ -282,11 +312,23 @@ class MPDService(object):
         self._options.single = value
 
     def stats(self):
-        has_song = int(bool(self._app.player.info))
+        app = self._app
+        albums = list(app.library.albums.itervalues())
+
+        song_count = 0
+        artists = set()
+        for album in albums:
+            # print(album)
+            # print(album('artist'))
+            for song in album.songs:
+                # print(song)
+                artists.add(song('artist'))
+                song_count += 1
+
         stats = [
-            ("artists", has_song),
-            ("albums", has_song),
-            ("songs", has_song),
+            ("artists", len(artists)),
+            ("albums", len(albums)),
+            ("songs", song_count),
             ("uptime", 1),
             ("playtime", 1),
             ("db_playtime", 1),
@@ -306,6 +348,31 @@ class MPDService(object):
                 state = "play"
         else:
             state = "stop"
+
+        """
+        volume: 0-100 (deprecated: -1 if the volume cannot be determined)
+        repeat: 0 or 1
+        random: 0 or 1
+        single [2]: 0, 1, or oneshot [6]
+        consume [2]: 0 or 1
+        playlist: 31-bit unsigned integer, the playlist version number
+        playlistlength: integer, the length of the playlist
+        state: play, stop, or pause
+        song: playlist song number of the current song stopped on or playing
+        songid: playlist songid of the current song stopped on or playing
+        nextsong [2]: playlist song number of the next song to be played
+        nextsongid [2]: playlist songid of the next song to be played
+        time: total time elapsed (of current playing/paused song) in seconds (deprecated, use elapsed instead)
+        elapsed [3]: Total time elapsed within the current song in seconds, but with higher resolution.
+        duration [5]: Duration of the current song in seconds.
+        bitrate: instantaneous bitrate in kbps
+        xfade: crossfade in seconds
+        mixrampdb: mixramp threshold in dB
+        mixrampdelay: mixrampdelay in seconds
+        audio: The format emitted by the decoder plugin during playback, format: samplerate:bits:channels. See Global Audio Format for a detailed explanation.
+        updating_db: job id
+        error: if there is an error, returns message here
+        """
 
         status = [
             ("volume", int(app.player.volume * 100)),
@@ -347,13 +414,13 @@ class MPDService(object):
             return None
 
         parts = []
-        parts.append(u"file: %s" % info("~filename"))
+        parts.append("file: %s" % info("~filename"))
         parts.append(format_tags(info))
-        parts.append(u"Time: %d" % int(info("~#length")))
-        parts.append(u"Pos: %d" % 0)
-        parts.append(u"Id: %d" % self._get_id(info))
+        parts.append("Time: %d" % int(info("~#length")))
+        parts.append("Pos: %d" % 0)
+        parts.append("Id: %d" % self._get_id(info))
 
-        return u"\n".join(parts)
+        return "\n".join(parts)
 
     def playlistinfo(self, start=None, end=None):
         if start is not None and start > 1:
@@ -372,10 +439,10 @@ class MPDService(object):
         info = self._app.player.info
         if version != self._pl_ver and info:
             parts = []
-            parts.append(u"file: %s" % info("~filename"))
-            parts.append(u"Pos: %d" % 0)
-            parts.append(u"Id: %d" % self._get_id(info))
-            return u"\n".join(parts)
+            parts.append("file: %s" % info("~filename"))
+            parts.append("Pos: %d" % 0)
+            parts.append("Id: %d" % self._get_id(info))
+            return "\n".join(parts)
 
 
 class MPDServer(BaseTCPServer):
@@ -404,9 +471,18 @@ class MPDRequestError(Exception):
         self.msg = msg
         self.code = code
         self.index = index
+        debug_print('MPDRequestError', msg=msg, code=code, index=index)
 
+class Commands():
+    command_list_begin = "command_list_begin"
+    command_list_ok_begin = "command_list_ok_begin"
+    command_list_end = "command_list_end"
+    command_list_begin_set = {command_list_begin, command_list_ok_begin}
 
 class MPDConnection(BaseTCPConnection):
+
+
+    _commands = {}
 
     #  ------------ connection interface  ------------
 
@@ -415,17 +491,18 @@ class MPDConnection(BaseTCPConnection):
         self.service = service
         service.add_connection(self)
 
-        str_version = u".".join(map(str, service.version))
-        self._buf = bytearray((u"OK MPD %s\n" % str_version).encode("utf-8"))
+        str_version = ".".join(map(str, service.version))
+        self._buf = bytearray(("OK MPD %s\n" % str_version).encode("utf-8"))
         self._read_buf = bytearray()
 
-        # begin - command processing state
-        self._use_command_list = False
-        # everything below is only valid if _use_command_list is True
+        # command list processing state
+        self._command_list_started = False
+
+        # if True, we should reply to all executed command
         self._command_list_ok = False
+        
+        # commands received so far
         self._command_list = []
-        self._command = None
-        # end - command processing state
 
         self.permission = self.service.default_permission
 
@@ -435,25 +512,28 @@ class MPDConnection(BaseTCPConnection):
     def handle_read(self, data):
         self._feed_data(data)
 
-        while 1:
+        while True:
             line = self._get_next_line()
             if line is None:
                 break
 
-            self.log(u"-> " + repr(line))
+            self.log("-> " + repr(line))
 
             try:
-                cmd, args = parse_command(line)
+                cmd_name, args = parse_command(line)
             except ParseError:
                 # TODO: not sure what to do here re command lists
+                print('PARSE ERROR')
                 continue
 
+            print(Colorise.green(f'-> {cmd_name} {args}'))
+            
             try:
-                self._handle_command(cmd, args)
+                self._handle_command(cmd_name, args)
             except MPDRequestError as e:
-                self._error(e.msg, e.code, e.index)
-                self._use_command_list = False
-                del self._command_list[:]
+                self._error(e.msg, e.code, e.index, command=cmd_name)
+                self._command_list_started = False
+                self._command_list = []
 
     def handle_write(self):
         data = self._buf[:]
@@ -471,6 +551,7 @@ class MPDConnection(BaseTCPConnection):
     #  ------------ rest ------------
 
     def authenticate(self, password):
+        # FIXME: store password as hash
         if password == self.service._config.config_get("password"):
             self.permission = Permissions.PERMISSION_ALL
         else:
@@ -502,86 +583,88 @@ class MPDConnection(BaseTCPConnection):
         """Writes a line to the client"""
 
         assert isinstance(line, str)
-        self.log(u"<- " + repr(line))
+        self.log("<- " + repr(line))
+        print(Colorise.blue(f'<- {line}'))
 
         self._buf.extend(line.encode("utf-8", errors="replace") + b"\n")
 
     def ok(self):
-        self.write_line(u"OK")
+        self.write_line("OK")
 
-    def _error(self, msg, code, index):
+    def list_ok(self):
+        self.write_line("list_OK")
+
+    def _error(self, msg=None, code=None, index=None, command=""):
         error = []
-        error.append(u"ACK [%d" % code)
+        error.append("ACK [%d" % code)
         if index is not None:
-            error.append(u"@%d" % index)
-        assert self._command is not None
-        error.append(u"] {%s}" % self._command)
+            error.append("@%d" % index)
+        error.append("] {%s}" % command)
         if msg is not None:
-            error.append(u" %s" % msg)
-        self.write_line(u"".join(error))
+            error.append(" %s" % msg)
+        self.write_line("".join(error))
+        debug_print('ERROR', msg=msg, code=code, index=index, command=command)
 
     def _handle_command(self, command, args):
-        self._command = command
-
-        if command == u"command_list_end":
-            if not self._use_command_list:
-                self._error(u"list_end without begin")
+        # end of command list: execute collected commands
+        if command == Commands.command_list_end:
+            if not self._command_list_started:
+                self._error("command_list_end before begin", command=command)
                 return
 
-            for i, (cmd, args) in enumerate(self._command_list):
+            for i, (cmd_name, args) in enumerate(self._command_list):
                 try:
-                    self._exec_command(cmd, args)
+                    self._exec_command(cmd_name, args)
                 except MPDRequestError as e:
                     # reraise with index
                     raise MPDRequestError(e.msg, e.code, i)
 
             self.ok()
-            self._use_command_list = False
-            del self._command_list[:]
+            self._command_list_started = False
+            self._command_list = []
             return
 
-        if command in (u"command_list_begin", u"command_list_ok_begin"):
-            if self._use_command_list:
-                raise MPDRequestError(u"begin without end")
+        # start of command list: wait for commands to execute in batch
+        if command in Commands.command_list_begin_set:
+            if self._command_list_started:
+                raise MPDRequestError("begin without end")
+            if self._command_list:
+                print(f"Command list wasn't empty: {self._commands}")
+                self._command_list = []
 
-            self._use_command_list = True
-            self._command_list_ok = command == u"command_list_ok_begin"
-            assert not self._command_list
+            self._command_list_started = True
+            self._command_list_ok = command == Commands.command_list_ok_begin    
             return
 
-        if self._use_command_list:
+        # add new command to batch
+        if self._command_list_started:
             self._command_list.append((command, args))
+        # execute command immediately
         else:
             self._exec_command(command, args)
 
-    def _exec_command(self, command, args, no_ack=False):
-        self._command = command
-
+    def _exec_command(self, command, args):
         if command not in self._commands:
-            print_w("Unhandled command %r, sending OK." % command)
-            command = "ping"
+            print(f'Unhandled command "{command}", fallback to `OK`')
 
             # Unhandled command, default to OK for now..
-            if not self._use_command_list:
+            if not self._command_list_started:
                 self.ok()
             elif self._command_list_ok:
-                self.write_line(u"list_OK")
+                self.list_ok()
             return
 
         cmd, do_ack, permission = self._commands[command]
         if permission != (self.permission & permission):
-            raise MPDRequestError("Insufficient permission",
-                    AckError.PERMISSION)
+            raise MPDRequestError("Insufficient permission", AckError.PERMISSION)
 
         cmd(self, self.service, args)
 
-        if self._use_command_list:
+        if self._command_list_started:
             if self._command_list_ok:
-                self.write_line(u"list_OK")
+                self.list_ok()
         elif do_ack:
             self.ok()
-
-    _commands = {}
 
     @classmethod
     def Command(cls, name, ack=True, permission=Permissions.PERMISSION_ADMIN):
@@ -671,12 +754,12 @@ def _cmd_play(conn, service, args):
 
 @MPDConnection.Command("listplaylists")
 def _cmd_listplaylists(conn, service, args):
-    pass
+    unimplemented('listplaylists')
 
 
 @MPDConnection.Command("list")
 def _cmd_list(conn, service, args):
-    pass
+    unimplemented('list')
 
 
 @MPDConnection.Command("playid")
@@ -742,14 +825,14 @@ def _cmd_setvol(conn, service, args):
 def _cmd_status(conn, service, args):
     status = service.status()
     for k, v in status:
-        conn.write_line(u"%s: %s" % (k, v))
+        conn.write_line("%s: %s" % (k, v))
 
 
 @MPDConnection.Command("stats")
 def _cmd_stats(conn, service, args):
     status = service.stats()
     for k, v in status:
-        conn.write_line(u"%s: %s" % (k, v))
+        conn.write_line("%s: %s" % (k, v))
 
 
 @MPDConnection.Command("currentsong")
@@ -761,8 +844,9 @@ def _cmd_currentsong(conn, service, args):
 
 @MPDConnection.Command("count")
 def _cmd_count(conn, service, args):
-    conn.write_line(u"songs: 0")
-    conn.write_line(u"playtime: 0")
+    unimplemented('count')
+    conn.write_line("songs: 0")
+    conn.write_line("playtime: 0")
 
 
 @MPDConnection.Command("plchanges")
@@ -823,20 +907,20 @@ def _cmd_seekcur(conn, service, args):
 
 @MPDConnection.Command("outputs")
 def _cmd_outputs(conn, service, args):
-    conn.write_line(u"outputid: 0")
-    conn.write_line(u"outputname: dummy")
-    conn.write_line(u"outputenabled: 1")
+    conn.write_line("outputid: 0")
+    conn.write_line("outputname: dummy")
+    conn.write_line("outputenabled: 1")
 
 
 @MPDConnection.Command("commands", permission=Permissions.PERMISSION_NONE)
 def _cmd_commands(conn, service, args):
     for name in conn.list_commands():
-        conn.write_line(u"command: " + str(name))
+        conn.write_line("command: " + str(name))
 
 
 @MPDConnection.Command("tagtypes")
 def _cmd_tagtypes(conn, service, args):
-    for mpd_key, ql_key in TAG_MAPPING:
+    for mpd_key, _ql_key in TAG_MAPPING:
         conn.write_line(mpd_key)
 
 

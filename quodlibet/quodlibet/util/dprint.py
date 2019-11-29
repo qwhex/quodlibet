@@ -111,7 +111,7 @@ def frame_info(level=0):
     else:
         return ""
 
-    for i in range(level + 1):
+    for _i in range(level + 1):
         try:
             frame = frame.f_back
         except AttributeError:
@@ -267,7 +267,7 @@ def print_exc(exc_info=None, context=None):
         # the exception
         text = u"".join(format_exception_only(etype, value))
         try:
-            filename, lineno, name, line = extract_tb(tb)[-1]
+            filename, lineno, name, _line = extract_tb(tb)[-1]
         except IndexError:
             # no stack
             string = text
