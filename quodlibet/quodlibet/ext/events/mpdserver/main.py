@@ -69,7 +69,7 @@ SAME_TAGS = [
     "Album",
     "AbumSort", # same as album, but for sorting
     "AlbumArtist", # on multi-artist albums: the main artist
-    "AlbumArtistAort", # same as albumartist, but for sorting
+    "AlbumArtistSort", # same as albumartist, but for sorting
     "Title",
     "Genre",
     "Composer", # the artist who composed the song
@@ -86,6 +86,10 @@ SAME_TAGS = [
     "musicbrainz_workid",
 ]
 
+# used in "list" command
+LOWER_TAG_TO_TAG = {tag.lower(): tag for tag in SAME_TAGS}
+
+# when an mpd tag has a different name in quodlibet, we use this mapping
 TAG_MAPPING = {
     "date": "~year", # a 4-digit year
     "track": "tracknumber", # the decimal track number within the album
@@ -444,6 +448,44 @@ class MPDService(object):
             parts.append("Id: %d" % self._get_id(info))
             return "\n".join(parts)
 
+    def list_(self, args):
+        """
+        Lists unique tags values of the specified type.
+
+        TYPE can be any tag supported by MPD. Additional arguments may specify a filter. 
+        The group keyword may be used (repeatedly) to group the results by one or more tags.
+        
+        {TYPE} {FILTER} [group {GROUPTYPE}]
+        """
+
+        tag_type = args[0]
+        if tag_type in LOWER_TAG_TO_TAG.keys():
+            ql_tag = tag_type
+        elif tag_type in TAG_MAPPING.keys():
+            ql_tag = TAG_MAPPING[tag_type]
+        else:
+            print('UNKNOWN TAG TYPE: {tag_type}')
+            return
+
+        print(f'tag_type: {tag_type}')
+        print(f'ql_tag: {ql_tag}')
+
+        app = self._app
+        albums = {album.title: album for album in app.library.albums.itervalues()}
+        
+        songs = []
+        for album in albums.values():
+            for song in album.songs:
+                # print(song)
+                songs.append(song)
+
+        results = set()
+        for song in songs:
+            print(song)
+            results.add(song(ql_tag))
+        
+        return (f"{LOWER_TAG_TO_TAG[tag_type]}: {result}" for result in results)
+
 
 class MPDServer(BaseTCPServer):
 
@@ -759,7 +801,8 @@ def _cmd_listplaylists(conn, service, args):
 
 @MPDConnection.Command("list")
 def _cmd_list(conn, service, args):
-    unimplemented('list')
+    for line in service.list_(args):
+        conn.write_line(line)
 
 
 @MPDConnection.Command("playid")
@@ -921,6 +964,8 @@ def _cmd_commands(conn, service, args):
 @MPDConnection.Command("tagtypes")
 def _cmd_tagtypes(conn, service, args):
     for mpd_key, _ql_key in TAG_MAPPING:
+        conn.write_line(mpd_key)
+    for mpd_key in SAME_TAGS:
         conn.write_line(mpd_key)
 
 
