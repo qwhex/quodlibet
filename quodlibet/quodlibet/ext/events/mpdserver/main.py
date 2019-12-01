@@ -15,6 +15,8 @@ from quodlibet.util import print_d, print_w
 from quodlibet.util.dprint import Colorise
 from .tcpserver import BaseTCPServer, BaseTCPConnection
 
+from collections import defaultdict
+
 # FIXME
 import sys
 print(f'Python version: {sys.version}')
@@ -459,16 +461,31 @@ class MPDService(object):
         """
 
         tag_type = args[0]
-        if tag_type in LOWER_TAG_TO_TAG.keys():
-            ql_tag = tag_type
-        elif tag_type in TAG_MAPPING.keys():
-            ql_tag = TAG_MAPPING[tag_type]
-        else:
-            print('UNKNOWN TAG TYPE: {tag_type}')
-            return
+        ql_tag = self._mpd_to_ql_tag(tag_type)
 
         print(f'tag_type: {tag_type}')
         print(f'ql_tag: {ql_tag}')
+
+        group_by = None
+        filters = {}
+        if len(args) > 1:
+            for i in range(1, len(args), 2):
+                try:
+                    key, val = args[i], args[i+1]
+                except IndexError:
+                    key, val = "artist", args[i]
+
+                if not val:
+                    continue
+
+                if key == "group":
+                    group_by = val
+                else:
+                    ql_filter_key = self._mpd_to_ql_tag(key)
+                    filters[ql_filter_key] = val
+
+        print(f'group_by: {group_by}')
+        print(f'filters: {filters}')
 
         app = self._app
         albums = {album.title: album for album in app.library.albums.itervalues()}
@@ -479,12 +496,45 @@ class MPDService(object):
                 # print(song)
                 songs.append(song)
 
+        groups = defaultdict(set)
         results = set()
         for song in songs:
-            print(song)
-            results.add(song(ql_tag))
+            tag_val = song(ql_tag)
+
+            match = True
+            for filter_key, filter_val in filters.items():
+                song_filter_val = song(filter_key)
+                print(f'compare {filter_val}, {song_filter_val}')
+                if song_filter_val != filter_val:
+                    match = False
+                    break
+
+            if not match:
+                continue
+
+            if group_by:
+                groups[song(group_by)].add(tag_val)
+            else:
+                results.add(tag_val)
         
-        return (f"{LOWER_TAG_TO_TAG[tag_type]}: {result}" for result in results)
+        if group_by:
+            for group_by_val, results in groups.items():
+                yield f"{LOWER_TAG_TO_TAG[group_by]}: {group_by_val}"
+                for result in results:
+                    yield f"{LOWER_TAG_TO_TAG[tag_type]}: {result}"    
+        else:
+            for result in results:
+                yield f"{LOWER_TAG_TO_TAG[tag_type]}: {result}"
+
+    def _mpd_to_ql_tag(self, tag):
+        if tag in LOWER_TAG_TO_TAG.keys():
+            return tag
+        elif tag in TAG_MAPPING.keys():
+            return TAG_MAPPING[tag]
+        
+        print('UNKNOWN TAG: {tag}')
+        return False
+
 
 
 class MPDServer(BaseTCPServer):
